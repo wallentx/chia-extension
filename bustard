@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -e
+
+# This assumes your default branch is main
+
+REPO=$1
+BRANCH=${2:-main}
+STRING="Graft.yaml"
+REPO_TMP=$(mktemp -d) || exit 1
+ONLY_REPO="$REPO_TMP/$(basename $(echo "$REPO") | cut -d. -f1)"
+EXT_NAME=$(basename $(echo "$REPO"))
+CHIA_PATH=$(dirname $(which chia))
+REPO_PATH=$(pwd -P)
+if [[ "$VIRTUAL_ENV" = "" ]]; then
+  exit 1
+fi
+
+if [[ "$(git rev-parse --show-toplevel 2>/dev/null)" != $(pwd -P) ]]; then
+  echo "Not in chia-blockchain project root."
+  exit 1
+fi
+
+WIDTH=$(echo "$(($(tput cols) - 20))")
+
+function shutdown() {
+  tput cnorm
+}
+trap shutdown EXIT
+
+function cursorBack() {
+  echo -en "\033[$1D"
+}
+
+function spinner() {
+        local LC_CTYPE=C
+        tput civis
+        local CL="\e[2K"
+        local spin="⣷⣯⣟⡿⢿⣻⣽⣾"
+        local pid=$(jobs -p)
+        local charwidth=1
+  while kill -0 $pid 2>/dev/null; do
+    local i=$(((i + $charwidth) % ${#spin}))
+    printf "%s" "$(tput setaf 2)${spin:$i:$charwidth}$(tput sgr0)"
+    cursorBack 1
+    sleep .1
+  done
+        tput cnorm
+        wait $(jobs -p)
+}
+
+git clone -q \
+  --no-checkout \
+  --depth=1 \
+  --single-branch \
+  --branch="$BRANCH" \
+  "$REPO" "$ONLY_REPO"
+
+cd "$ONLY_REPO"
+STR_RES=$(git ls-tree origin/"$BRANCH" -r --name-only | grep "$STRING" || false)
+if [[ $STR_RES != false ]]; then
+  cd "$REPO_PATH"
+  mkdir -p ext
+  cd ext
+  echo -n "Cloning extension..."
+  git clone -q --single-branch --branch="$BRANCH" "$REPO" & spinner
+  echo ""
+  cd "$EXT_NAME"
+  BUILD_CMD=$(yq '.chia.graft.build.command' "$STRING")
+  if [[ ! -z $BUILD_CMD ]]; then
+    echo -n "Building..."
+    $(bash -c "$BUILD_CMD" &> /dev/null) & spinner
+    echo ""
+  fi
+  ARTIFACTS=$(yq '.chia.graft.artifacts[]' "$STRING")
+  if [[ ! -z $ARTIFACTS ]]; then
+    echo -n "Linking artifacts..."
+    echo "$ARTIFACTS" | xargs -I {} ln -s $(pwd)/{} "$CHIA_PATH"/
+    echo ""
+    echo "Done!"
+  fi
+else
+  echo "No files matching pattern: $STRING"
+  exit 1
+fi
