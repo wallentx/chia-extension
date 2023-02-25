@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+set -e
+
+
+CHIA_PATH=$(dirname "$(which chia)")
+REPO_PATH=$(pwd -P)
+EXT_HOME="$REPO_PATH"/ext
+STRING="Graft.yaml"
+REPO_TMP=$(mktemp -d) || exit 1
+
+
+if [[ "$VIRTUAL_ENV" = "" ]]; then
+  exit 1
+fi
+
+if [[ "$(git rev-parse --show-toplevel 2>/dev/null)" != $(pwd -P) ]]; then
+  echo "Not in chia-blockchain project root."
+  exit 1
+fi
+
+
+function shutdown() {
+  tput cnorm
+  rm -rf "$REPO_TMP"
+}
+trap shutdown EXIT
+
+function cursorBack() {
+  echo -en "\033[$1D"
+}
+
+function spinner() {
+    local LC_CTYPE=C
+    local LC_ALL=en_US.utf-8
+    tput civis
+    local CL="\e[2K"
+    local spin="⣷⣯⣟⡿⢿⣻⣽⣾"
+    local pid=$(jobs -p)
+    local charwidth=1
+    while kill -0 "$pid" 2>/dev/null; do
+      local i=$(((i + $charwidth) % ${#spin}))
+      printf "%s" "$(tput setaf 2)${spin:$i:$charwidth}$(tput sgr0)"
+      cursorBack 1
+      sleep .1
+    done
+    printf "%s" "$(tput setaf 2)✓$(tput sgr0)"
+    tput cnorm
+    wait "$(jobs -p)"
+}
+
+# This assumes your default branch is main
+
+usage () {
+  echo "chia-extension <options>"
+  echo "-h        Show usage"
+  echo "-i        Install extension"
+  echo "-r        Remove extension"
+  echo "-l        List installed extensions"
+# TODO:
+# echo "-u        Update extension"
+# echo "-s        Search extensions"
+# echo "-b        Browse extensions"
+}
+
+while getopts "hir:l" opt; do
+  case "$opt" in
+    h)
+        usage
+        exit 0
+        ;;
+    i)
+        EXT_OPT="install"
+        shift "$((OPTIND-1))"
+        REPO=$1
+        BRANCH=${2:-main}
+        ONLY_REPO="$REPO_TMP/$(basename "$(echo "$REPO")" | cut -d. -f1)"
+        EXT_NAME=$(basename "$(echo "$REPO")")
+        ;;
+    r)
+        EXT_OPT="remove"
+        EXT_NAME=${OPTARG}
+        shift "$((OPTIND-1))"
+        ;;
+    l)
+        installed=($(find ext -mindepth 1 -maxdepth 1 -type d -printf '%f\n'))
+        if [[ -z "$installed" ]]; then
+          echo "👻 No installed extensions found in $EXT_HOME"
+          exit 1
+        fi
+        printf "%s\t\t%s\t%s\n" "📲 Extension" "Commit🔖" "Branch🌿"
+        echo "────────────────────────────────────────────────────────"
+        for ext in "${installed[@]}"; do
+          EXT_VERS=$(cd $EXT_HOME/$ext && printf "%s\t\t%s" "$(git rev-parse --short HEAD)" "$(git rev-parse --abbrev-ref HEAD)" && cd $OLDPWD)
+          printf "%s\t\t%s\n" "🧩 - $ext" "$EXT_VERS"
+        done
+        echo ""
+        exit 0
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+  esac
+done
+#shift "$((OPTIND-1))"
+
+
+if [[ $EXT_OPT == remove ]]; then
+  if [[ -d $REPO_PATH/ext/$EXT_NAME ]]; then
+    REMOVE_CMD=$(yq '.chia.graft.remove.command' "$EXT_HOME"/"$EXT_NAME"/"$STRING")
+    if [[ $REMOVE_CMD != null ]]; then
+      echo "⚠️ The following commands will be executed within '$(tput setaf 4)$EXT_HOME/$EXT_NAME$(tput sgr0)':"
+      echo "$(tput setaf 5)$REMOVE_CMD$(tput sgr0)"
+      echo ""
+      read -p "Do you want to run these commands? [Y/n] " confirm
+      if [[ $confirm =~ ^[Yy]$ ]] || [[ -z $confirm ]]; then
+        echo -n "🪠 Removing..."
+        IFS=$'\n'
+        for line in $BUILD_CMD; do
+          #echo "$line"
+          eval "$line" &> /dev/null
+        done & spinner
+      else
+        echo "⛔ Aborting."
+        exit 1
+      fi
+    else
+      echo "Manifest does not contain remove instructions."
+    fi
+    ARTIFACTS=$(yq '.chia.graft.artifacts[]' "$EXT_HOME"/"$EXT_NAME"/"$STRING")
+    if [[ $ARTIFACTS != null ]]; then
+      echo -n "📦🧹 Removing artifacts..."
+      echo "$ARTIFACTS" | while read -r artifact; do
+        artifact_n=$(basename "$artifact")
+        artifact_i="$CHIA_PATH"/"$artifact_n"
+        if [[ -e $artifact_i ]]; then
+          rm -rf "$artifact_i"
+        fi
+      done & spinner
+      echo ""
+      echo "📦 Artifacts removed. 🗑️"
+    fi
+    rm -rf "${EXT_HOME:?}"/"$EXT_NAME"
+    echo -ne "\r"; echo -n "🧩 $EXT_NAME has been removed."
+    sleep 0.25
+    echo -ne "\r"; echo -n "💣 $EXT_NAME has been removed."
+    sleep 0.25
+    echo -ne "\r"; echo -n "💥 $EXT_NAME has been removed."
+    sleep 0.25
+    echo -ne "\r"; echo -n "🌪️ $EXT_NAME has been removed."
+    sleep 0.25
+    echo -ne "\r"; echo "   $EXT_NAME has been removed."
+  else
+    echo -e "🧩 '$EXT_NAME' is not installed. 🤷"
+    exit 1
+  fi
+  exit 0
+fi
+
+git clone -q \
+  --no-checkout \
+  --depth=1 \
+  --single-branch \
+  --branch="$BRANCH" \
+  "$REPO" "$ONLY_REPO"
+
+cd "$ONLY_REPO"
+STR_RES=$(git ls-tree origin/"$BRANCH" -r --name-only | grep "$STRING" || false)
+if [[ $STR_RES != false ]]; then
+  cd "$REPO_PATH"
+  mkdir -p ext
+  cd ext
+  if [[ -d $EXT_NAME ]]; then
+    rm -rf "$EXT_NAME"
+  fi
+  echo -n "📥 Cloning extension..."
+  git clone -q --single-branch --branch="$BRANCH" "$REPO" & spinner
+  echo ""
+  cd "$EXT_NAME"
+  BUILD_CMD=$(yq '.chia.graft.build.command' "$STRING")
+  if [[ $BUILD_CMD != null ]]; then
+    echo "⚠️ The following commands will be executed within '$(tput setaf 4)$EXT_HOME/$EXT_NAME$(tput sgr0)':"
+    echo "$(tput setaf 5)$BUILD_CMD$(tput sgr0)"
+    echo ""
+    read -p "Do you want to run these commands? [Y/n] " confirm
+
+    if [[ $confirm =~ ^[Yy]$ ]] || [[ -z $confirm ]]; then
+      echo -n "🏗️ Building..."
+      IFS=$'\n'
+      for line in $BUILD_CMD; do
+        #echo "$line"
+        eval "$line" &> /dev/null
+      done & spinner
+      echo ""
+    else
+      echo "⛔ Aborting."
+      exit 1
+    fi
+  fi
+  ARTIFACTS=$(yq '.chia.graft.artifacts[]' "$STRING")
+  if [[ $ARTIFACTS != null ]]; then
+    echo -n "🔗 Linking artifacts..."
+    echo "$ARTIFACTS" | while read -r artifact; do
+      artifact_n=$(basename "$artifact")
+      artifact_i="$CHIA_PATH"/"$artifact_n"
+      if [[ ! -h $artifact_i ]]; then
+        ln -s "$EXT_HOME"/"$EXT_NAME"/"$artifact" "$artifact_i" &> /dev/null
+      fi
+    done & spinner
+    echo ""
+    echo "🏁 Done!"
+    echo "📦 The following artifacts have been symlinked to your venv:"
+    echo $(tput setaf 3)"$ARTIFACTS"$(tput sgr0)
+  fi
+else
+  echo "🔍 No files matching pattern: $STRING"
+  exit 1
+fi
+
+echo "🧩 '$EXT_NAME' has been installed."
