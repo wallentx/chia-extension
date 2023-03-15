@@ -1,2 +1,2 @@
-# bustard
-Chia extension framework &amp; package manager. "Smooth like bustard."
+# Chia Extension
+Chia extension framework &amp; package manager.
