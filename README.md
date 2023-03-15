@@ -45,3 +45,6 @@ Do you want to run these commands? [Y/n]
 almanac
 🧩 'almanac' has been installed.
 ```
+
+## Try it
+`chia-extension -i https://github.com/wallentx/bladebit cuda-compression`
